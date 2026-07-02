@@ -5,6 +5,14 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+import sklearn
+import joblib
+import sys
+import streamlit as st
+
+st.write("Python:", sys.version)
+st.write("Scikit-learn:", sklearn.__version__)
+st.write("Joblib:", joblib.__version__)
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = ROOT / "src"
