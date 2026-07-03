@@ -1,25 +1,20 @@
 from pathlib import Path
+import sys
 
 import joblib
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-import sklearn
-import joblib
-import sys
-import streamlit as st
-
-st.write("Python:", sys.version)
-st.write("Scikit-learn:", sklearn.__version__)
-st.write("Joblib:", joblib.__version__)
-
 ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = ROOT / "src"
+if str(SRC_DIR) not in sys.path:
+	sys.path.insert(0, str(SRC_DIR))
 MODELS_DIR = ROOT / "models"
 DATA_FP = SRC_DIR / "feature_engineered_album.csv"
 REG_MODEL_FP = MODELS_DIR / "tuned_regression_model.pkl"
 CLF_MODEL_FP = MODELS_DIR / "tuned_classification_model.pkl"
+REC_MODEL_FP = MODELS_DIR / "track_recommender.pkl"
 
 
 @st.cache_data
@@ -50,7 +45,7 @@ def make_input_row(df: pd.DataFrame, album_type: str, bpm: int, avg_ms_played: f
 
 st.set_page_config(page_title="Spotify Popularity Dashboard", layout="wide")
 st.title("Spotify Song Popularity Prediction & Listening Behavior")
-st.caption("Regression first, then classification and behavior analytics.")
+st.caption("Regression, classification, behavior analytics, and track recommendations.")
 
 if not DATA_FP.exists():
 	st.error(f"Missing engineered dataset: {DATA_FP}")
@@ -59,13 +54,18 @@ if not DATA_FP.exists():
 df = load_dataset()
 reg_model = load_model(REG_MODEL_FP)
 clf_model = load_model(CLF_MODEL_FP)
+rec_model = load_model(REC_MODEL_FP)
 
 if reg_model is None:
 	st.warning(f"Regression model not found at {REG_MODEL_FP}")
 if clf_model is None:
 	st.warning(f"Classification model not found at {CLF_MODEL_FP}")
+if rec_model is None:
+	st.warning(f"Recommendation model not found at {REC_MODEL_FP}. Run `python src/train_recommendation.py`.")
 
-tab_overview, tab_eda, tab_predict = st.tabs(["Overview", "EDA", "Predict"])
+tab_overview, tab_eda, tab_predict, tab_recommend = st.tabs(
+	["Overview", "EDA", "Predict", "Recommend"]
+)
 
 with tab_overview:
 	col1, col2, col3, col4 = st.columns(4)
@@ -137,3 +137,92 @@ with tab_predict:
 			st.success(f"Predicted class: {label}")
 		else:
 			st.info("Classification model unavailable.")
+
+with tab_recommend:
+	st.subheader("Track Recommendations")
+	st.caption(
+		"Content-based recommendations using BPM, album type, listening completion, and release year."
+	)
+
+	if rec_model is None:
+		st.info("Train the recommender with `python src/train_recommendation.py` to enable this tab.")
+	else:
+		mode = st.radio(
+			"Recommendation mode",
+			["Similar to a track", "Based on listening profile"],
+			horizontal=True,
+		)
+		n_recs = st.slider("Number of recommendations", min_value=3, max_value=15, value=5)
+
+		if mode == "Similar to a track":
+			track_options = sorted(df["track_name"].dropna().unique().tolist())
+			seed_track = st.selectbox("Choose a seed track", track_options)
+			if st.button("Get recommendations", type="primary"):
+				try:
+					recs = rec_model.recommend_by_track(seed_track, n=n_recs)
+					st.success(f"Tracks similar to **{seed_track}**")
+					st.dataframe(recs, use_container_width=True, hide_index=True)
+
+					fig_recs = px.bar(
+						recs,
+						x="similarity",
+						y="track_name",
+						orientation="h",
+						hover_data=["album_name", "bpm", "number_of_streams"],
+						title="Similarity scores",
+					)
+					st.plotly_chart(fig_recs, use_container_width=True)
+				except ValueError as exc:
+					st.error(str(exc))
+		else:
+			album_type_options = sorted(df["album_type"].dropna().unique().tolist())
+			col1, col2, col3 = st.columns(3)
+			with col1:
+				rec_album_type = st.selectbox("Preferred album type", album_type_options, key="rec_album_type")
+				rec_bpm = st.slider("Preferred BPM", min_value=60, max_value=220, value=int(df["bpm"].median()), key="rec_bpm")
+			with col2:
+				rec_avg_ms = st.number_input(
+					"Average ms played",
+					min_value=10_000.0,
+					max_value=600_000.0,
+					value=float(df["average_ms_played"].median()),
+					key="rec_avg_ms",
+				)
+				rec_avg_percent = st.slider(
+					"Average % song played",
+					min_value=30.0,
+					max_value=100.0,
+					value=float(df["avg_percent_song_played"].median()),
+					key="rec_avg_percent",
+				)
+			with col3:
+				rec_release_year = st.slider(
+					"Preferred release year",
+					min_value=int(df["release_year"].min()),
+					max_value=2026,
+					value=int(df["release_year"].median()),
+					key="rec_release_year",
+				)
+
+			if st.button("Get recommendations", type="primary", key="profile_recs"):
+				recs = rec_model.recommend_by_profile(
+					album_type=rec_album_type,
+					bpm=rec_bpm,
+					avg_ms_played=rec_avg_ms,
+					avg_percent=rec_avg_percent,
+					release_year=rec_release_year,
+					n=n_recs,
+				)
+				st.success("Tracks matching your listening profile")
+				st.dataframe(recs, use_container_width=True, hide_index=True)
+
+				fig_profile = px.scatter(
+					recs,
+					x="bpm",
+					y="number_of_streams",
+					size="score",
+					color="album_type",
+					hover_name="track_name",
+					title="Recommended tracks by tempo and popularity",
+				)
+				st.plotly_chart(fig_profile, use_container_width=True)
